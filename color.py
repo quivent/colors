@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """color - Change terminal foreground/background color."""
 
+import base64
 import json
 import os
+import plistlib
+import subprocess
 import sys
+import time
 
 COLORS = {
     "black":   (0, 0, 0),
@@ -133,6 +137,22 @@ Adjust:
   color saturate         Push toward most dominant channel
   color invert           Invert current color
 
+iTerm2:
+  color theme <name>     Set iTerm2 color preset
+  color themes           List available color presets
+  color preview [delay]  Cycle through all presets
+  color profile <name>   Switch iTerm2 profile
+  color profiles         List available profiles
+  color tab <color>      Set tab bar color
+  color tab reset        Reset tab color
+  color cursor <color>   Set cursor color
+  color cursor block     Set cursor shape (block|bar|underline)
+  color badge <text>     Set badge text
+  color badge clear      Clear badge
+  color set <slot> <c>   Set individual color slot
+  color transparency <N> Set window transparency 0-100
+  color blur <N>         Set background blur 0-100
+
 Other:
   color reset            Reset terminal to defaults
   color show             Show current color
@@ -157,6 +177,276 @@ def cmd_demo():
         cr, cg, cb = _contrast(r, g, b)
         # Foreground colored text + background swatch with sample text
         print(f"  \033[48;2;{r};{g};{b}m\033[38;2;{cr};{cg};{cb}m {name:10s} The quick brown fox jumps over the lazy dog \033[0m")
+
+
+def _require_iterm(cmd_name):
+    if os.environ.get("TERM_PROGRAM") != "iTerm2":
+        print(f"Error: '{cmd_name}' requires iTerm2.")
+        sys.exit(1)
+
+
+def _iterm_esc(payload):
+    """Send an iTerm2 proprietary escape sequence."""
+    print(f"\033]{payload}\a", end="", flush=True)
+
+
+def _resolve_color_arg(args):
+    """Parse a color from args: named color, hex, or R G B. Returns (r,g,b) and remaining args."""
+    if not args:
+        return None, args
+    token = args[0].lower()
+    if token in COLORS:
+        return COLORS[token], args[1:]
+    if token.startswith("#") and len(token) in (4, 7):
+        h = token[1:]
+        if len(h) == 3:
+            h = h[0]*2 + h[1]*2 + h[2]*2
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)), args[1:]
+    if len(args) >= 3:
+        try:
+            return (_clamp(int(args[0])), _clamp(int(args[1])), _clamp(int(args[2]))), args[3:]
+        except ValueError:
+            pass
+    return None, args
+
+
+# --- iTerm2 SetColors keys ---
+ITERM_COLOR_KEYS = {
+    "fg": "fg", "bg": "bg", "bold": "bold", "link": "link",
+    "selbg": "selbg", "selfg": "selfg", "curbg": "curbg", "curfg": "curfg",
+    "underline": "underline", "tab": "tab",
+    "black": "black", "red": "red", "green": "green", "yellow": "yellow",
+    "blue": "blue", "magenta": "magenta", "cyan": "cyan", "white": "white",
+    "brblack": "br_black", "brred": "br_red", "brgreen": "br_green",
+    "bryellow": "br_yellow", "brblue": "br_blue", "brmagenta": "br_magenta",
+    "brcyan": "br_cyan", "brwhite": "br_white",
+}
+
+
+def _get_iterm_presets():
+    """Read available color presets from iTerm2 preferences."""
+    plist_path = os.path.expanduser(
+        "~/Library/Preferences/com.googlecode.iterm2.plist"
+    )
+    try:
+        result = subprocess.run(
+            ["plutil", "-convert", "xml1", "-o", "-", plist_path],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return []
+        data = plistlib.loads(result.stdout)
+        presets = data.get("Custom Color Presets", {})
+        return sorted(presets.keys())
+    except (FileNotFoundError, Exception):
+        return []
+
+
+def _get_iterm_profiles():
+    """Read profile names from iTerm2 preferences."""
+    plist_path = os.path.expanduser(
+        "~/Library/Preferences/com.googlecode.iterm2.plist"
+    )
+    try:
+        result = subprocess.run(
+            ["plutil", "-convert", "xml1", "-o", "-", plist_path],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return []
+        data = plistlib.loads(result.stdout)
+        bookmarks = data.get("New Bookmarks", [])
+        return sorted(b.get("Name", "?") for b in bookmarks)
+    except (FileNotFoundError, Exception):
+        return []
+
+
+def cmd_theme(name):
+    _require_iterm("theme")
+    _iterm_esc(f"1337;SetColors=preset={name}")
+    print(f"Theme: {name}")
+
+
+def cmd_themes():
+    _require_iterm("themes")
+    presets = _get_iterm_presets()
+    if not presets:
+        print("No custom presets found. Built-in presets are always available:")
+        print("  Try: color theme 'Solarized Dark'")
+        return
+    print("Available iTerm2 color presets:")
+    for name in presets:
+        print(f"  {name}")
+
+
+def cmd_profile(name):
+    _require_iterm("profile")
+    _iterm_esc(f"1337;SetProfile={name}")
+    print(f"Profile: {name}")
+
+
+def cmd_profiles():
+    _require_iterm("profiles")
+    profiles = _get_iterm_profiles()
+    if not profiles:
+        print("No profiles found.")
+        return
+    print("Available iTerm2 profiles:")
+    for name in profiles:
+        print(f"  {name}")
+
+
+def cmd_tab(args):
+    """Set or reset the iTerm2 tab color."""
+    _require_iterm("tab")
+    if not args or args[0].lower() == "reset":
+        _iterm_esc("6;1;bg;*;default")
+        print("Tab color reset.")
+        return
+    rgb, _ = _resolve_color_arg(args)
+    if rgb is None:
+        print("Usage: color tab <color|reset>")
+        sys.exit(1)
+    r, g, b = rgb
+    _iterm_esc(f"6;1;bg;red;brightness;{r}")
+    _iterm_esc(f"6;1;bg;green;brightness;{g}")
+    _iterm_esc(f"6;1;bg;blue;brightness;{b}")
+    print(f"Tab color: rgb({r}, {g}, {b})")
+
+
+def cmd_cursor(args):
+    """Change cursor color or shape."""
+    _require_iterm("cursor")
+    if not args:
+        print("Usage: color cursor <color> | color cursor block|bar|underline")
+        sys.exit(1)
+    shapes = {"block": 0, "bar": 1, "line": 1, "underline": 2}
+    token = args[0].lower()
+    if token in shapes:
+        _iterm_esc(f"1337;CursorShape={shapes[token]}")
+        print(f"Cursor shape: {token}")
+        return
+    rgb, _ = _resolve_color_arg(args)
+    if rgb is None:
+        print(f"Unknown cursor option: {args[0]}")
+        sys.exit(1)
+    r, g, b = rgb
+    _iterm_esc(f"1337;SetColors=curbg={r:02x}{g:02x}{b:02x}")
+    print(f"Cursor color: rgb({r}, {g}, {b})")
+
+
+def cmd_badge(args):
+    """Set or clear the iTerm2 badge."""
+    _require_iterm("badge")
+    if not args or args[0].lower() == "clear":
+        _iterm_esc("1337;SetBadgeFormat=")
+        print("Badge cleared.")
+        return
+    text = " ".join(args)
+    encoded = base64.b64encode(text.encode()).decode()
+    _iterm_esc(f"1337;SetBadgeFormat={encoded}")
+    print(f"Badge: {text}")
+
+
+def cmd_setcolor(args):
+    """Set an individual iTerm2 color slot: color set <slot> <color>."""
+    _require_iterm("set")
+    if len(args) < 2:
+        print("Usage: color set <slot> <color>")
+        print("Slots: " + ", ".join(sorted(ITERM_COLOR_KEYS.keys())))
+        sys.exit(1)
+    slot = args[0].lower()
+    if slot not in ITERM_COLOR_KEYS:
+        print(f"Unknown slot '{slot}'. Available: {', '.join(sorted(ITERM_COLOR_KEYS.keys()))}")
+        sys.exit(1)
+    rgb, _ = _resolve_color_arg(args[1:])
+    if rgb is None:
+        print(f"Can't parse color from: {' '.join(args[1:])}")
+        sys.exit(1)
+    r, g, b = rgb
+    key = ITERM_COLOR_KEYS[slot]
+    _iterm_esc(f"1337;SetColors={key}={r:02x}{g:02x}{b:02x}")
+    cr, cg, cb = _contrast(r, g, b)
+    swatch = f"\033[48;2;{r};{g};{b}m\033[38;2;{cr};{cg};{cb}m  {slot} = rgb({r}, {g}, {b})  \033[0m"
+    print(swatch)
+
+
+def cmd_preview(args):
+    """Cycle through iTerm2 presets with a delay, then revert."""
+    _require_iterm("preview")
+    delay = 1.5
+    if args and args[0].replace(".", "").isdigit():
+        delay = float(args[0])
+        args = args[1:]
+    presets = args if args else _get_iterm_presets()
+    if not presets:
+        print("No presets to preview.")
+        return
+    print(f"Previewing {len(presets)} presets ({delay}s each). Ctrl-C to stop.")
+    original = None
+    try:
+        for name in presets:
+            if original is None:
+                original = name
+            _iterm_esc(f"1337;SetColors=preset={name}")
+            print(f"  → {name}")
+            time.sleep(delay)
+    except KeyboardInterrupt:
+        print()
+    if original:
+        _iterm_esc(f"1337;SetColors=preset={original}")
+        print(f"Reverted to: {original}")
+
+
+def cmd_transparency(args):
+    """Set window transparency via AppleScript."""
+    _require_iterm("transparency")
+    if not args:
+        print("Usage: color transparency <0-100>")
+        sys.exit(1)
+    try:
+        val = int(args[0])
+    except ValueError:
+        print("Transparency must be a number 0-100.")
+        sys.exit(1)
+    val = max(0, min(100, val))
+    alpha = val / 100.0
+    script = f'''
+    tell application "iTerm2"
+        tell current session of current window
+            set transparency to {alpha}
+        end tell
+    end tell
+    '''
+    subprocess.run(["osascript", "-e", script], capture_output=True)
+    print(f"Transparency: {val}%")
+
+
+def cmd_blur(args):
+    """Set background blur radius via AppleScript."""
+    _require_iterm("blur")
+    if not args:
+        print("Usage: color blur <0-100>")
+        sys.exit(1)
+    try:
+        val = int(args[0])
+    except ValueError:
+        print("Blur must be a number 0-100.")
+        sys.exit(1)
+    val = max(0, min(100, val))
+    radius = val / 100.0
+    enable = "true" if val > 0 else "false"
+    script = f'''
+    tell application "iTerm2"
+        tell current session of current window
+            set use transparency to true
+            set blur to {enable}
+            set blur radius to {radius}
+        end tell
+    end tell
+    '''
+    subprocess.run(["osascript", "-e", script], capture_output=True)
+    print(f"Blur: {val}%")
 
 
 def cmd_invert():
@@ -230,6 +520,47 @@ def main():
         return
     if cmd == "demo":
         cmd_demo()
+        return
+
+    # iTerm2 commands
+    if cmd == "themes":
+        cmd_themes()
+        return
+    if cmd == "theme":
+        if not rest:
+            print("Usage: color theme <preset-name>")
+            sys.exit(1)
+        cmd_theme(" ".join(rest))
+        return
+    if cmd == "preview":
+        cmd_preview(rest)
+        return
+    if cmd == "profile":
+        if not rest:
+            print("Usage: color profile <name>")
+            sys.exit(1)
+        cmd_profile(" ".join(rest))
+        return
+    if cmd == "profiles":
+        cmd_profiles()
+        return
+    if cmd == "tab":
+        cmd_tab(rest)
+        return
+    if cmd == "cursor":
+        cmd_cursor(rest)
+        return
+    if cmd == "badge":
+        cmd_badge(rest)
+        return
+    if cmd == "set":
+        cmd_setcolor(rest)
+        return
+    if cmd == "transparency":
+        cmd_transparency(rest)
+        return
+    if cmd == "blur":
+        cmd_blur(rest)
         return
 
     # Hex color

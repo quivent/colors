@@ -1,16 +1,16 @@
+# Python
+__pycache__/
+*.egg-info/
+*.pyc
+dist/
+build/
+
 # Build outputs
-/build/
-/dist/
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-
-# Go specific
-*.test
-*.out
-/vendor/
 
 # IDE files
 .vscode/
@@ -25,18 +25,10 @@
 ._*
 .Spotlight-V100
 .Trashes
-ehthumbs.db
 Thumbs.db
 
 # Logs and runtime
 *.log
 *.pid
-*.seed
-*.pid.lock
-
-# Redis dumps (for development)
-dump.rdb
-
-# Temporary files
 *.tmp
 *.temp
